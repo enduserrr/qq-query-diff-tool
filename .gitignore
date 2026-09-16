@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 .pytest_cache/
 .hermes/
+settings_overrides.py

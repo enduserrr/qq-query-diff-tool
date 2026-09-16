@@ -11,6 +11,22 @@ from collections import Counter
 
 import psycopg2
 
+os.system("")
+# COLOR = {
+#     "HEADER": "\033[95m",
+#     "BLUE": "\033[94m",
+#     "GREEN": "\033[92m",
+#     "RED": "\033[91m",
+#     "ESC": "\033[0m",
+# }
+
+# Import database settings
+try:
+    import settings_overrides
+except ImportError:
+    print(COLOR[RED], "Error: Could not import settings_overrides.py", file=sys.stderr)
+    raise SystemExit(1)
+
 USAGE = "usage: python3 qq.py <file1.sql> <file2.sql>"
 
 _DOLLAR_TAG = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
@@ -281,85 +297,103 @@ def _fmt_row(row):
 
 
 def build_report(name_a, name_b, db_desc, run_a, run_b, diff):
-    """Render the full diff report as a string."""
+    """Render the full diff report as a string with exact ANSI targeting."""
+    
+    # ANSI Color Codes
+    RESET = "\033[0m"
+    A_COLOR = "\033[94m"          # Bright Blue
+    B_COLOR = "\033[93m"          # Bright Yellow
+    GREY = "\033[90m"             # Bright Black (Grey)
+    GREY_CURSIVE = "\033[3;90m"   # Italic + Grey
+    WHITE = "\033[97m"            # Bright White
+    BG_WHITE_FG_BLACK = "\033[30;47m" # Black text, White background
+    BOLD_WHITE = "\033[1;37m"     # Bold White text
+    VERDICT_FMT = "\033[1;37;44m" # Bold White text on Dark Blue background
+
+    def fmt_hdr(text): return f"{BOLD_WHITE}{text}{RESET}"
+    def fmt_sum(text): return f"{BG_WHITE_FG_BLACK}{text}{RESET}"
+
+    # Helper strings to inject white filenames and return to the current grey state
+    wa_top = f"{WHITE}{name_a}{GREY_CURSIVE}"
+    wb_top = f"{WHITE}{name_b}{GREY_CURSIVE}"
+    wa = f"{WHITE}{name_a}{GREY}"
+    wb = f"{WHITE}{name_b}{GREY}"
+
     L = []
-    L.append(f"qq: {name_a}  vs  {name_b}")
-    L.append(f"database: {db_desc}")
-    L.append(f"results: {diff['n_results'][0]} in {name_a}, {diff['n_results'][1]} in {name_b}")
+    
+    # --- Top Block: Cursive Grey with White Filenames ---
+    L.append(f"{GREY_CURSIVE}qq: {wa_top}  vs  {wb_top}{RESET}")
+    L.append(f"{GREY_CURSIVE}{db_desc}{RESET}")
+    L.append(f"{GREY_CURSIVE}results: {diff['n_results'][0]} in {wa_top}, {diff['n_results'][1]} in {wb_top}{RESET}")
     if diff["row_counts"][0] is not None and diff["n_results"][0] == diff["n_results"][1] == 1:
-        L.append(f"rows: {diff['row_counts'][0]} in {name_a}, {diff['row_counts'][1]} in {name_b}")
+        L.append(f"{GREY_CURSIVE}rows: {diff['row_counts'][0]} in {wa_top}, {diff['row_counts'][1]} in {wb_top}{RESET}")
     L.append("")
 
+    # --- Summary Block: White Background, Black Text ---
     cells = diff["cells"]
     if cells is None:
-        L.append("Cells exactly the same: n/a (structure mismatch — see below)")
+        L.append(fmt_sum("Cells exactly the same: n/a (structure mismatch — see below)"))
     else:
-        L.append(f"Cells exactly the same: {cells['same']} of {cells['total']} ({cells['pct']:.2f}%)")
+        L.append(fmt_sum(f"Cells exactly the same: {cells['same']} of {cells['total']} ({cells['pct']:.2f}%)"))
+    
     rm = diff["rows_missing"]
     if rm["a"] is None:
-        L.append("Rows missing: n/a (different number of results)")
+        L.append(fmt_sum("Rows missing: n/a (different number of results)"))
     else:
-        L.append(f"Rows missing: {rm['a']} in {name_a}, {rm['b']} in {name_b}")
-    L.append(f"Row order identical: {'yes' if diff['row_order_same'] else 'no'}")
-    L.append(f"Execution time: {run_a['seconds']:.3f}s in {name_a}, {run_b['seconds']:.3f}s in {name_b}")
+        L.append(fmt_sum(f"Rows missing: {rm['a']} in {name_a}, {rm['b']} in {name_b}"))
+        
+    L.append(fmt_sum(f"Row order identical: {'yes' if diff['row_order_same'] else 'no'}"))
+    L.append(fmt_sum(f"Execution time: {run_a['seconds']:.3f}s in {name_a}, {run_b['seconds']:.3f}s in {name_b}"))
     L.append("")
+    # ---------------------------------------------------
 
     if run_a["errors"] or run_b["errors"]:
-        L.append("Statement errors:")
-        for tag, run in ((name_a, run_a), (name_b, run_b)):
+        L.append(fmt_hdr("Statement errors:"))
+        for tag, run, fmtr_col, fname in ((name_a, run_a, A_COLOR, wa), (name_b, run_b, B_COLOR, wb)):
             for idx, stmt, msg in run["errors"]:
-                L.append(f"  [{tag}] statement {idx + 1}: {msg}")
-                L.append(f"      SQL: {stmt[:120]}")
+                L.append(f"{GREY}  [{fname}] statement {idx + 1}: {fmtr_col}{msg}{RESET}")
+                L.append(f"{GREY}      SQL: {stmt[:120]}{RESET}")
         L.append("")
 
     cols = diff["columns"]
     if cols["removed"] or cols["added"] or cols["renamed"]:
-        L.append("Column differences:")
+        L.append(fmt_hdr("Column differences:"))
         if cols["removed"]:
-            L.append(f"  only in {name_a}: {', '.join(cols['removed'])}")
+            L.append(f"{GREY}  only in {wa}: {A_COLOR}{', '.join(cols['removed'])}{RESET}")
         if cols["added"]:
-            L.append(f"  only in {name_b}: {', '.join(cols['added'])}")
+            L.append(f"{GREY}  only in {wb}: {B_COLOR}{', '.join(cols['added'])}{RESET}")
         if cols["renamed"]:
-            L.append(f"  renamed (content-verified): "
-                     + ", ".join(f"{a} -> {b}" for a, b in cols["renamed"]))
+            L.append(f"{GREY}  renamed (content-verified): "
+                     + ", ".join(f"{a} -> {b}" for a, b in cols["renamed"]) + f"{RESET}")
         L.append("")
 
     if diff["type_diffs"]:
-        L.append("Column type differences:")
+        L.append(fmt_hdr("Column type differences:"))
         for t in diff["type_diffs"][:50]:
-            L.append(f"  result {t['result']}, column {t['column']}: "
-                     f"{t['a']} in {name_a} vs {t['b']} in {name_b}")
+            L.append(f"{GREY}  result {t['result']}, column {t['column']}: "
+                     f"{A_COLOR}{t['a']}{GREY} in {wa} vs {B_COLOR}{t['b']}{GREY} in {wb}{RESET}")
         L.append("")
 
     if diff["row_samples"]["a"] or diff["row_samples"]["b"]:
-        L.append("Missing row samples (up to 5 per side):")
+        L.append(fmt_hdr("Missing row samples (up to 5 per side):"))
         for row in diff["row_samples"]["a"]:
-            L.append(f"  only in {name_a}: {_fmt_row(row)}")
+            L.append(f"{GREY}  only in {wa}: {A_COLOR}{_fmt_row(row)}{RESET}")
         for row in diff["row_samples"]["b"]:
-            L.append(f"  only in {name_b}: {_fmt_row(row)}")
+            L.append(f"{GREY}  only in {wb}: {B_COLOR}{_fmt_row(row)}{RESET}")
         L.append("")
 
     if diff["cell_diffs"]:
-        L.append(f"Cell differences (first {len(diff['cell_diffs'])}):")
+        L.append(fmt_hdr(f"Cell differences (first {len(diff['cell_diffs'])}):"))
         for c in diff["cell_diffs"]:
-            L.append(f"  result {c['result']}, row {c['row']}, column {c['column']}: "
-                     f"{_fmt_val(c['a'])} in {name_a} vs {_fmt_val(c['b'])} in {name_b}")
+            L.append(f"{GREY}  result {c['result']}, row {c['row']}, column {c['column']}: "
+                     f"{A_COLOR}{_fmt_val(c['a'])}{GREY} in {wa} vs {B_COLOR}{_fmt_val(c['b'])}{GREY} in {wb}{RESET}")
         L.append("")
 
-    L.append("VERDICT: " + ("IDENTICAL — no differences found"
-                             if diff["identical"] else "DIFFERENT — see above"))
+    # --- Final Verdict: Dark Blue Background, Bold White Text ---
+    verdict_text = "IDENTICAL — no differences found" if diff["identical"] else "DIFFERENT — see above"
+    L.append(f"{VERDICT_FMT}VERDICT: {verdict_text}{RESET}")
+    
     return "\n".join(L)
-
-
-def db_kwargs_from_env():
-    """Connection parameters from PG* env vars (psycopg2 defaults fill the rest)."""
-    kwargs = {}
-    for env, kw in (("PGHOST", "host"), ("PGPORT", "port"), ("PGUSER", "user"),
-                    ("PGPASSWORD", "password"), ("PGDATABASE", "dbname")):
-        v = os.environ.get(env)
-        if v:
-            kwargs[kw] = v
-    return kwargs
 
 
 def main(argv):
@@ -371,17 +405,27 @@ def main(argv):
             print(f"qq: file not found: {path}", file=sys.stderr)
             raise SystemExit(2)
     name_a, name_b = argv[1], argv[2]
-    db_kwargs = db_kwargs_from_env()
+    
+    # Use DBCONN from settings_overrides
+    raw_dbconn = settings_overrides.DBCONN
+    db_kwargs = dict(raw_dbconn)
+    
+    # Map 'database' to 'dbname' for psycopg2 compatibility
+    if "database" in db_kwargs:
+        db_kwargs["dbname"] = db_kwargs.pop("database")
+        
     desc = dict(db_kwargs)
     if "password" in desc:
         desc["password"] = "***"
-    db_desc = ", ".join(f"{k}={v}" for k, v in desc.items()) or "psycopg2 defaults"
+    db_desc = ", ".join(f"{k}={v}" for k, v in desc.items())
+    
     try:
         run_a = run_sql_file(name_a, db_kwargs)
         run_b = run_sql_file(name_b, db_kwargs)
     except psycopg2.Error as e:
         print(f"qq: database error: {str(e).strip()}", file=sys.stderr)
         raise SystemExit(3)
+    
     diff = compare_results(run_a["results"], run_b["results"])
     if run_a["errors"] or run_b["errors"]:
         diff["identical"] = False
