@@ -1,7 +1,8 @@
 DBCONN = {'user':'name',
           'password':'pw',
-          'host':'127.0.0.1',
-          'database':'trading',
+          'host':'0.0.0.0',
+          'port':'',
+          'dbname':'trading',
           }
 
 try:
