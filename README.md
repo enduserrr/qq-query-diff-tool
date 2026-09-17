@@ -43,3 +43,6 @@ DBCONN = {'user': '', 'password': '', 'host': '', 'port': '', 'dbname': ''}
 * `2` — Usage or file-not-found error
 * `3` — Database connection failed
 * `4` — Security abort (hazardous command detected)
+
+## Credits
+**NoSleepHermes & [Glm5.3 Flash]** - *For one-shotting 70% of the heavy lifting from a single prompt.*
