@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """qq.py — run two .sql files against a Postgres database and diff their results.
+Wraps every user statement in a savepoint:
+A: SAVEPOINT qq_sp
+B: User's SQL statement
+C: RELEASE SAVEPOINT qq_sp
 
 Usage: python3 qq.py <file1.sql> <file2.sql>
 """
@@ -12,19 +16,24 @@ from collections import Counter
 import psycopg2
 
 os.system("")
-# COLOR = {
-#     "HEADER": "\033[95m",
-#     "BLUE": "\033[94m",
-#     "GREEN": "\033[92m",
-#     "RED": "\033[91m",
-#     "ESC": "\033[0m",
-# }
+COLOR = {
+    "ESC"         : "\033[0m",
+    "WHITE"       : "\033[0;37m",
+    "BOLD_WHITE"  : "\33[1;97m",
+    "GREY"        : "\033[0;90m",
+    "GC"          : "\033[2;97m",
+    "B_ON_W"      : "\033[2;90m",
+    "A_TEAL"      : "\033[0;96m",
+    "B_YELLOW"    : "\033[0;93m",
+    "RED_RED"     : "\u001b[41;1m",
+    "GREEN_GREEN" : "\u001b[42;1m",
+}
 
 # Import database settings
 try:
     import settings_overrides
 except ImportError:
-    print(COLOR[RED], "Error: Could not import settings_overrides.py", file=sys.stderr)
+    print("ERROR: Could not import settings_overrides.py", file=sys.stderr)
     raise SystemExit(1)
 
 USAGE = "usage: python3 qq.py <file1.sql> <file2.sql>"
@@ -65,7 +74,7 @@ def _effectively_empty(stmt):
 
 
 def split_sql_statements(sql):
-    """Split a SQL script into statements, honoring string literals, dollar-quoted
+    """Split SQL into statements, honoring string literals, dollar-quoted
     strings, and comments. Returns statements in order, whitespace-stripped,
     dropping empty / comment-only fragments."""
     statements = []
@@ -237,17 +246,33 @@ def _type_names(conn, oids):
     finally:
         cur.close()
 
+def sanitize_query(sql_text, filename):
+    """Check for explicitly banned commands to prevent database alterations."""
+    # Using \b for word boundaries to prevent accidental ban of a column named "update_time" or some such
+    banned_pattern = re.compile(
+        r'\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|'
+        r'BEGIN|START|COPY|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|CALL|DO|EXECUTE|NEXTVAL|SETVAL)\b', 
+        re.IGNORECASE
+    )
+    
+    match = banned_pattern.search(sql_text)
+    if match:
+        raise ValueError(f"Hazardous command '{match.group(1).upper()}' detected in {filename}.")
 
-def run_sql_file(path, db_kwargs):
-    """Execute a .sql file; return {results:[{columns, types, rows, seconds}],
-    errors:[(idx, stmt, msg)], seconds}.
-
-    Each file runs inside its own transaction, which is always rolled back:
-    statements are compared from an identical starting state and qq never
-    persists the queries' side effects. Each statement runs under a savepoint,
-    so one failing statement doesn't poison the rest."""
+def run_query_from_file(path, db_kwargs):
+    """Each query from a source file given as an argument runs in it's own tx
+    which is always rolled back. Each statement runs under a savepointso one
+    failing statement doesn't poison the rest."""
     with open(path) as fh:
         sql = fh.read()
+
+    # Safety check: 
+    try:
+        sanitize_query(sql, path)
+    except ValueError as e:
+        print(f"⚠️  NOT GREAT ➝ {e}", file=sys.stderr)
+        raise SystemExit(4)
+
     conn = psycopg2.connect(**db_kwargs)
     try:
         results, errors = [], []
@@ -300,36 +325,38 @@ def build_report(name_a, name_b, db_desc, run_a, run_b, diff):
     """Render the full diff report as a string with exact ANSI targeting."""
     
     # ANSI Color Codes
-    RESET = "\033[0m"
-    A_COLOR = "\033[94m"          # Bright Blue
-    B_COLOR = "\033[93m"          # Bright Yellow
-    GREY = "\033[90m"             # Bright Black (Grey)
-    GREY_CURSIVE = "\033[3;90m"   # Italic + Grey
-    WHITE = "\033[97m"            # Bright White
-    BG_WHITE_FG_BLACK = "\033[30;47m" # Black text, White background
-    BOLD_WHITE = "\033[1;37m"     # Bold White text
-    VERDICT_FMT = "\033[1;37;44m" # Bold White text on Dark Blue background
+    ESC         = "\033[0m"
+    WHITE       = "\033[0;37m" 
+    BOLD_WHITE  = "\33[1;97m"
+    GREY        = "\033[0;90m"
+    GC          = "\033[2;97m"
+    B_ON_W      = "\033[2;90m"
+    A_TEAL      = "\033[0;96m"
+    B_YELLOW    = "\033[0;93m"
+    RED_RED     = "\u001b[41;1m"
+    GREEN_GREEN = "\u001b[44;1m" 
 
-    def fmt_hdr(text): return f"{BOLD_WHITE}{text}{RESET}"
-    def fmt_sum(text): return f"{BG_WHITE_FG_BLACK}{text}{RESET}"
+    def fmt_hdr(text): return f"{WHITE}{text}{ESC}"
+    def fmt_sum(text): return f"{WHITE}{text}{ESC}"
 
     # Helper strings to inject white filenames and return to the current grey state
-    wa_top = f"{WHITE}{name_a}{GREY_CURSIVE}"
-    wb_top = f"{WHITE}{name_b}{GREY_CURSIVE}"
-    wa = f"{WHITE}{name_a}{GREY}"
-    wb = f"{WHITE}{name_b}{GREY}"
+    wa_top = f"{ESC}{GC}{name_a}{GC}"
+    wb_top = f"{ESC}{GC}{name_b}{GC}"
+    wa = f"{ESC}{GC}{name_a}{GC}"
+    wb = f"{ESC}{GC}{name_b}{GC}"
 
     L = []
+    L.append(f"{ESC}{GREY}_______________________________________________________________________________[qq.py]{ESC}")
     
     # --- Top Block: Cursive Grey with White Filenames ---
-    L.append(f"{GREY_CURSIVE}qq: {wa_top}  vs  {wb_top}{RESET}")
-    L.append(f"{GREY_CURSIVE}{db_desc}{RESET}")
-    L.append(f"{GREY_CURSIVE}results: {diff['n_results'][0]} in {wa_top}, {diff['n_results'][1]} in {wb_top}{RESET}")
-    if diff["row_counts"][0] is not None and diff["n_results"][0] == diff["n_results"][1] == 1:
-        L.append(f"{GREY_CURSIVE}rows: {diff['row_counts'][0]} in {wa_top}, {diff['row_counts'][1]} in {wb_top}{RESET}")
-    L.append("")
-
-    # --- Summary Block: White Background, Black Text ---
+    # L.append(f"{GC}qq: {wa_top}  vs  {wb_top}{ESC}")
+    # L.append(f"{GC}{db_desc}{ESC}")
+    # L.append(f"{GC}results: {diff['n_results'][0]} in {wa_top}, {diff['n_results'][1]} in {wb_top}{ESC}")
+    # if diff["row_counts"][0] is not None and diff["n_results"][0] == diff["n_results"][1] == 1:
+    #     L.append(f"{GC}rows: {diff['row_counts'][0]} in {wa_top}, {diff['row_counts'][1]} in {wb_top}{ESC}")
+    # L.append("")
+    
+    # Summary
     cells = diff["cells"]
     if cells is None:
         L.append(fmt_sum("Cells exactly the same: n/a (structure mismatch — see below)"))
@@ -349,49 +376,50 @@ def build_report(name_a, name_b, db_desc, run_a, run_b, diff):
 
     if run_a["errors"] or run_b["errors"]:
         L.append(fmt_hdr("Statement errors:"))
-        for tag, run, fmtr_col, fname in ((name_a, run_a, A_COLOR, wa), (name_b, run_b, B_COLOR, wb)):
+        for tag, run, fmtr_col, fname in ((name_a, run_a, A_TEAL, wa), (name_b, run_b, B_YELLOW, wb)):
             for idx, stmt, msg in run["errors"]:
-                L.append(f"{GREY}  [{fname}] statement {idx + 1}: {fmtr_col}{msg}{RESET}")
-                L.append(f"{GREY}      SQL: {stmt[:120]}{RESET}")
+                L.append(f"{GREY}  [{fname}] statement {idx + 1}: {fmtr_col}{msg}{ESC}")
+                L.append(f"{GREY}      SQL: {stmt[:120]}{ESC}")
         L.append("")
 
     cols = diff["columns"]
     if cols["removed"] or cols["added"] or cols["renamed"]:
         L.append(fmt_hdr("Column differences:"))
         if cols["removed"]:
-            L.append(f"{GREY}  only in {wa}: {A_COLOR}{', '.join(cols['removed'])}{RESET}")
+            L.append(f"{GREY}  only in {wa}: {A_TEAL}{', '.join(cols['removed'])}{ESC}")
         if cols["added"]:
-            L.append(f"{GREY}  only in {wb}: {B_COLOR}{', '.join(cols['added'])}{RESET}")
+            L.append(f"{GREY}  only in {wb}: {B_YELLOW}{', '.join(cols['added'])}{ESC}")
         if cols["renamed"]:
             L.append(f"{GREY}  renamed (content-verified): "
-                     + ", ".join(f"{a} -> {b}" for a, b in cols["renamed"]) + f"{RESET}")
+                     + ", ".join(f"{a} -> {b}" for a, b in cols["renamed"]) + f"{ESC}")
         L.append("")
 
     if diff["type_diffs"]:
         L.append(fmt_hdr("Column type differences:"))
         for t in diff["type_diffs"][:50]:
             L.append(f"{GREY}  result {t['result']}, column {t['column']}: "
-                     f"{A_COLOR}{t['a']}{GREY} in {wa} vs {B_COLOR}{t['b']}{GREY} in {wb}{RESET}")
+                     f"{A_TEAL}{t['a']}{GREY} in {wa} vs {B_YELLOW}{t['b']}{GREY} in {wb}{ESC}")
         L.append("")
 
     if diff["row_samples"]["a"] or diff["row_samples"]["b"]:
         L.append(fmt_hdr("Missing row samples (up to 5 per side):"))
         for row in diff["row_samples"]["a"]:
-            L.append(f"{GREY}  only in {wa}: {A_COLOR}{_fmt_row(row)}{RESET}")
+            L.append(f"{GREY}  only in {wa}: {A_TEAL}{_fmt_row(row)}{ESC}")
         for row in diff["row_samples"]["b"]:
-            L.append(f"{GREY}  only in {wb}: {B_COLOR}{_fmt_row(row)}{RESET}")
+            L.append(f"{GREY}  only in {wb}: {B_YELLOW}{_fmt_row(row)}{ESC}")
         L.append("")
 
     if diff["cell_diffs"]:
         L.append(fmt_hdr(f"Cell differences (first {len(diff['cell_diffs'])}):"))
         for c in diff["cell_diffs"]:
             L.append(f"{GREY}  result {c['result']}, row {c['row']}, column {c['column']}: "
-                     f"{A_COLOR}{_fmt_val(c['a'])}{GREY} in {wa} vs {B_COLOR}{_fmt_val(c['b'])}{GREY} in {wb}{RESET}")
+                     f"{A_TEAL}{_fmt_val(c['a'])}{GREY} in {wa} vs {B_YELLOW}{_fmt_val(c['b'])}{GREY} in {wb}{ESC}")
         L.append("")
 
-    # --- Final Verdict: Dark Blue Background, Bold White Text ---
-    verdict_text = "IDENTICAL — no differences found" if diff["identical"] else "DIFFERENT — see above"
-    L.append(f"{VERDICT_FMT}VERDICT: {verdict_text}{RESET}")
+    # Final Verdict
+    # verdict_text = "IDENTICAL — no differences found" if diff["identical"] else "DIFFERENT — see above"
+    L.append(f"{GREEN_GREEN}VERDICT: IDENTICAL — no differences found") if diff["identical"] else L.append(f"{RED_RED}VERDICT: DIFFERENT — see above")
+    # L.append(f"{RED_RED}VERDICT: {verdict_text}{ESC}")
     
     return "\n".join(L)
 
@@ -406,7 +434,7 @@ def main(argv):
             raise SystemExit(2)
     name_a, name_b = argv[1], argv[2]
     
-    # Use DBCONN from settings_overrides
+    # DBCONN from settings_overrides
     raw_dbconn = settings_overrides.DBCONN
     db_kwargs = dict(raw_dbconn)
     
@@ -420,8 +448,8 @@ def main(argv):
     db_desc = ", ".join(f"{k}={v}" for k, v in desc.items())
     
     try:
-        run_a = run_sql_file(name_a, db_kwargs)
-        run_b = run_sql_file(name_b, db_kwargs)
+        run_a = run_query_from_file(name_a, db_kwargs)
+        run_b = run_query_from_file(name_b, db_kwargs)
     except psycopg2.Error as e:
         print(f"qq: database error: {str(e).strip()}", file=sys.stderr)
         raise SystemExit(3)
