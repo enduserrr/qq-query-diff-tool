@@ -418,7 +418,7 @@ def build_report(name_a, name_b, db_desc, run_a, run_b, diff):
 
     # Final Verdict
     # verdict_text = "IDENTICAL — no differences found" if diff["identical"] else "DIFFERENT — see above"
-    L.append(f"{GREEN_GREEN}VERDICT: IDENTICAL — no differences found") if diff["identical"] else L.append(f"{RED_RED}VERDICT: DIFFERENT — see above")
+    L.append(f"{ESC}{GREEN_GREEN}VERDICT: IDENTICAL — no differences found{ESC}") if diff["identical"] else L.append(f"{RED_RED}VERDICT: DIFFERENT — see above{ESC}")
     # L.append(f"{RED_RED}VERDICT: {verdict_text}{ESC}")
     
     return "\n".join(L)
